@@ -12,7 +12,7 @@ Es el **Bloque 1** de 5. Los siguientes bloques agregan el esquema SQL, el códi
 | :--- | :--- |
 | Solo hay código para Nuevo León (`pjenl.gob.mx`, materia penal). | Se necesita un **adaptador por estado** con un contrato común. |
 | 2,900 sentencias únicas en `sentencias_with_url.csv`. | Es la semilla para la carga histórica de Nuevo León. |
-| La URL real del PDF tiene un identificador de archivo: `controller.aspx?file=~\files\146198-<uuid>.pdf`. | Ese identificador sirve como **llave estable** para deduplicar antes de descargar. |
+| La URL real del PDF tiene un identificador de archivo: `controller.aspx?file=~\files\146198-<uuid>.pdf`. | ~~Ese identificador sirve como llave estable.~~ **Corregido en 03a:** el uuid cambia en cada clic; la llave es el número de registro. |
 | `generador-sentencias.py` obtiene la URL del PDF con HTTP simple (`var DEFAULT_URL`), sin navegador. | La descarga puede hacerse con `httpx`; el navegador solo se usa donde sea indispensable. |
 | Fechas en formato `18/marzo/2021`. | La normalización de fechas en español es parte del contrato del adaptador. |
 | `Penales.aspx` no respondió en 15 s en una prueba del 2026-11-07. | Los timeouts, reintentos y horarios nocturnos son requisitos, no extras. |
@@ -155,7 +155,7 @@ Cada etapa se puede volver a correr sin duplicar datos. Cambiar el extractor sol
 
 | Nivel | Cuándo | Llave | Qué evita |
 | :--- | :--- | :--- | :--- |
-| 1 | Antes de descargar | `(fuente, source_key)`; en Nuevo León es el id de archivo `146198-<uuid>` | Descargas repetidas |
+| 1 | Antes de descargar | `(fuente, source_key)`; en Nuevo León es el número de registro (ver 03a) | Descargas repetidas |
 | 2 | Después de descargar | SHA-256 de los bytes | Guardar el mismo archivo dos veces |
 | 3 | Después de extraer | SHA-256 del texto normalizado | Indexar la misma sentencia publicada como un PDF distinto |
 
