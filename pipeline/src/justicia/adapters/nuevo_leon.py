@@ -32,6 +32,7 @@ from datetime import date
 from bs4 import BeautifulSoup
 
 from ..core.fechas import parse_fecha
+from ..processing.metadata import Metadatos, esta_testado, sentido_desde_texto
 from ..core.http import ClienteCortes
 from .base import DocumentoInvalido, ListingItem, RawDocument
 
@@ -43,6 +44,16 @@ GRID = "ctl00$ContentPlaceHolder1$gdvPenal"
 _RE_VISOR = re.compile(r"framePDF'\)\.attr\('src',\s*'([^']*Visor\.aspx[^']*)'")
 _RE_DEFAULT_URL = re.compile(r"var DEFAULT_URL = '(.*?)';")
 _RE_ID_ARCHIVO = re.compile(r"files\\+(\d+-[0-9a-fA-F-]{36})\.pdf")
+
+# Encabezado de los PDF (revisado en 20 sentencias reales, 2026-11-08):
+#   *CO000036718320*  /  SENTENCIAS  /  SE DICTA SENTENCIA DE PROCEDIMIENTO ABREVIADO
+#   PODER JUDICIAL DEL ESTADO DE NUEVO LEÓN  /  En Monterrey, Nuevo León, a …
+_RE_CODIGO = re.compile(r"\bCO\d{12}\b")
+_RE_TIPO = re.compile(r"^SE DICTA (.+)$", re.MULTILINE)
+_RE_MUNICIPIO = re.compile(
+    r"(?:^|\n)\.?\s*(?:En\s+)?(?:la\s+ciudad\s+de\s+)?([A-ZÁÉÍÓÚÑ][\wáéíóúñ ]+?),\s*Nuevo\s+Le[oó]n")
+_RE_CARPETA = re.compile(r"carpeta judicial(?:\s+n[uú]mero)?\s+([\d*]+/\d{4})", re.IGNORECASE)
+_RE_ELABORA = re.compile(r"\s*\([^)]*\)\s*$")
 
 
 @dataclass(frozen=True)
@@ -155,6 +166,7 @@ def agrupar(filas: list[FilaListado]) -> list[list[FilaListado]]:
 
 class NuevoLeonPenal:
     fuente = "nl-penal"
+    metadatos_version = "nl-penal-1"
 
     def __init__(self, cliente: ClienteCortes):
         self.cliente = cliente
@@ -215,6 +227,55 @@ class NuevoLeonPenal:
         if url is None:
             raise DocumentoInvalido(f"sin DEFAULT_URL para el registro {fila.registro}")
         return url, pagina_clic
+
+    def parse_metadata(self, texto: str, item: ListingItem) -> Metadatos:
+        """Metadatos de la fila del listado, completados con el encabezado del PDF.
+
+        El listado es la fuente principal (delitos, juez, sentido, fechas).
+        El texto aporta el tipo de resolución, el municipio, el código del
+        documento y, si el listado viene vacío, el sentido del fallo.
+        """
+        filas = item.datos.get("filas", [])
+        primera = filas[0] if filas else {}
+        delitos: list[str] = []
+        for fila in filas:
+            for delito in (fila.get("delitos") or "").split(","):
+                delito = " ".join(delito.split()).upper()
+                if delito and delito not in delitos:
+                    delitos.append(delito)
+
+        inicio = texto[:3000]
+        extra: dict[str, str] = {}
+        if m := _RE_CODIGO.search(inicio):
+            extra["codigo_documento"] = m.group(0)
+        if m := _RE_TIPO.search(inicio):
+            extra["tipo_resolucion"] = m.group(1).strip()
+        if "ABREVIADO" in extra.get("tipo_resolucion", "") or "procedimiento abreviado" in inicio.lower():
+            extra["procedimiento"] = "abreviado"
+        elif "juicio oral" in inicio.lower():
+            extra["procedimiento"] = "juicio oral"
+        if m := _RE_MUNICIPIO.search(inicio):
+            extra["municipio"] = m.group(1).strip()
+        expediente = None
+        if (m := _RE_CARPETA.search(inicio)) and not esta_testado(m.group(1)):
+            expediente = m.group(1)
+
+        emision = primera.get("fecha_emision_iso")
+        juez = _RE_ELABORA.sub("", primera.get("juez") or "").strip() or None
+        sentido = (primera.get("sentido_fallo") or "").strip() or None
+        if sentido is None and (sentido := sentido_desde_texto(texto)):
+            extra["sentido_origen"] = "texto"
+        return Metadatos(
+            materia="penal",
+            fecha_emision=date.fromisoformat(emision) if emision else None,
+            fecha_publicacion=item.fecha_publicacion,
+            expediente=expediente,
+            juez=juez,
+            sentido_fallo=sentido,
+            delitos=delitos,
+            descripcion=(primera.get("descripcion") or "").strip() or None,
+            extra=extra,
+        )
 
     async def fetch(self, item: ListingItem) -> RawDocument:
         r = await self.cliente.get(item.url)

@@ -102,3 +102,47 @@ async def test_max_nuevos_no_mueve_la_marca(repo):
     assert r["nuevos"] == 1
     fuente = await repo.obtener_fuente("nl-penal")
     assert fuente["marca_de_agua"] is None
+
+
+async def test_procesar_indexa_deduplica_y_revisa(repo, tmp_path):
+    from justicia.flows.procesamiento import procesar
+
+    from .pdf_simple import sentencia_nl
+    from .test_procesamiento import modelo_disponible
+    if not modelo_disponible():
+        pytest.skip("spaCy no instalado")
+
+    pdf = sentencia_nl()
+    # Mismo texto, bytes distintos (comentario al final): pasa el nivel 2,
+    # lo detecta el nivel 3.
+    p = PortalFalso(paginas=[[
+        Sentencia("600", "06/noviembre/2026", "07/noviembre/2026", pdf=pdf),
+        Sentencia("601", "06/noviembre/2026", "07/noviembre/2026", pdf=pdf + b"%otro\n"),
+        Sentencia("602", "06/noviembre/2026", "07/noviembre/2026", delito="",
+                  pdf=sentencia_nl(codigo="CO000000000002")),
+    ]])
+    almacen = AlmacenLocal(tmp_path)
+    await descubrir(repo, "nl-penal", **falso(p))
+    await descargar(repo, "nl-penal", almacen, **falso(p))
+
+    r = await procesar(repo, "nl-penal", almacen)
+    assert r == {"estado": "exitosa", "indexada": 1, "duplicada": 1, "revision": 1, "errores": 0}
+
+    s = await repo.pool.fetchrow("SELECT * FROM sentencia")
+    assert s["delitos"] == ["ROBO CON VIOLENCIA"]
+    assert s["metadatos_extra"]["municipio"] == "San Nicolás de los Garza"
+    assert "Pedro Gómez Ruiz" not in s["texto_publico"]
+    assert "[PERSONA]" in s["texto_publico"] and "[TELÉFONO]" in s["texto_publico"]
+
+    original = await repo.pool.fetchval("SELECT texto FROM privado.texto_original")
+    assert "Pedro Gómez Ruiz" in original
+
+    # La búsqueda en español ya encuentra la sentencia, sin acentos.
+    encontrada = await repo.pool.fetchval(
+        "SELECT count(*) FROM sentencia "
+        "WHERE busqueda @@ websearch_to_tsquery('justicia.es_unaccent', 'valoracion pruebas')")
+    assert encontrada == 1
+
+    revision = await repo.pool.fetchrow(
+        "SELECT source_key, ultimo_error FROM documento WHERE estado = 'revision'")
+    assert dict(revision) == {"source_key": "602", "ultimo_error": "sin delitos"}

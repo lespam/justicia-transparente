@@ -3,6 +3,8 @@
 Ejemplos:
     justicia descubrir nl-penal --max-paginas 1
     justicia descargar nl-penal --limite 20
+    justicia procesar nl-penal --limite 20
+    justicia procesar nl-penal --revision     # reintenta los que están en revisión
     justicia estado nl-penal
 """
 
@@ -18,6 +20,7 @@ from .core.almacen import AlmacenLocal
 from .core.db import Repositorio
 from .core.logs import configurar_logs
 from .flows.cosecha import FuenteNoDisponible, descargar, descubrir
+from .flows.procesamiento import procesar
 
 
 def _argumentos(argv: list[str] | None) -> argparse.Namespace:
@@ -36,6 +39,13 @@ def _argumentos(argv: list[str] | None) -> argparse.Namespace:
     g.add_argument("--limite", type=int, default=50)
     g.add_argument("--almacen", default=str(config.ALMACEN_DIR))
 
+    r = sub.add_parser("procesar", help="etapa 3: texto, metadatos y enmascaramiento")
+    r.add_argument("fuente")
+    r.add_argument("--limite", type=int, default=50)
+    r.add_argument("--almacen", default=str(config.ALMACEN_DIR))
+    r.add_argument("--revision", action="store_true",
+                   help="procesa los documentos en 'revision' en vez de 'descargada'")
+
     e = sub.add_parser("estado", help="documentos por estado")
     e.add_argument("fuente")
     return p.parse_args(argv)
@@ -50,6 +60,10 @@ async def _ejecutar(args: argparse.Namespace) -> dict:
         if args.comando == "descargar":
             return await descargar(repo, args.fuente, AlmacenLocal(args.almacen),
                                    limite=args.limite)
+        if args.comando == "procesar":
+            return await procesar(repo, args.fuente, AlmacenLocal(args.almacen),
+                                  limite=args.limite,
+                                  estado="revision" if args.revision else "descargada")
         filas = await repo.resumen(args.fuente)
         return {f["estado"]: f["total"] for f in filas}
     finally:

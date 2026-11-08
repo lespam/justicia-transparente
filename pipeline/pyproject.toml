@@ -8,10 +8,16 @@ dependencies = [
     "beautifulsoup4>=4.12",
     "asyncpg>=0.29",
     "structlog>=24.1",
+    "pypdfium2>=4.30",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+# Enmascaramiento de nombres. Necesario para el comando `procesar`.
+nlp = [
+    "spacy>=3.8,<3.9",
+    "es_core_news_md @ https://github.com/explosion/spacy-models/releases/download/es_core_news_md-3.8.0/es_core_news_md-3.8.0-py3-none-any.whl",
+]
 
 [project.scripts]
 justicia = "justicia.cli:main"
@@ -19,6 +25,9 @@ justicia = "justicia.cli:main"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/justicia"]

@@ -9,6 +9,7 @@ from uuid import UUID
 import asyncpg
 
 from ..adapters.base import ListingItem
+from ..processing.metadata import Metadatos
 from .almacen import ObjetoGuardado
 from .http import RegistroSolicitud
 
@@ -143,6 +144,69 @@ class Repositorio:
                   SET bloqueado_hasta = NULL, intentos = GREATEST(intentos - 1, 0)
                 WHERE id = $1""",
             documento_id)
+
+    # -- Procesamiento (etapa 3) ---------------------------------------------
+
+    async def clave_de_archivo(self, sha256: bytes) -> str:
+        return await self.pool.fetchval(
+            "SELECT clave_objeto FROM archivo WHERE sha256 = $1", sha256)
+
+    async def sentencia_por_texto(self, texto_sha256: bytes) -> int | None:
+        return await self.pool.fetchval(
+            "SELECT id FROM sentencia WHERE texto_sha256 = $1", texto_sha256)
+
+    async def marcar_documento(self, documento_id: int, estado: str, *,
+                               sentencia_id: int | None = None,
+                               motivo: str | None = None) -> None:
+        await self.pool.execute(
+            """UPDATE documento
+                  SET estado = $2, sentencia_id = COALESCE($3, sentencia_id),
+                      ultimo_error = $4, bloqueado_hasta = NULL
+                WHERE id = $1""",
+            documento_id, estado, sentencia_id, motivo)
+
+    async def guardar_sentencia(self, documento_id: int, fuente_id: str,
+                                archivo_sha256: bytes, texto_sha256: bytes,
+                                m: Metadatos, texto_publico: str, texto_original: str,
+                                num_paginas: int, uso_ocr: bool,
+                                extractor_version: str, metadatos_version: str
+                                ) -> tuple[str, int]:
+        """Inserta la sentencia y su texto privado; marca el documento.
+
+        Devuelve ('indexada', id) o, si otro proceso guardó el mismo texto
+        primero, ('duplicada', id_existente). Todo en una transacción.
+        """
+        async with self.pool.acquire() as c, c.transaction():
+            sentencia_id = await c.fetchval(
+                """INSERT INTO sentencia (
+                       fuente_id, archivo_sha256, texto_sha256, expediente, organo,
+                       juez, materia, fecha_emision, fecha_publicacion, sentido_fallo,
+                       delitos, descripcion, metadatos_extra, texto_publico,
+                       num_paginas, uso_ocr, extractor_version, metadatos_version)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+                           $14, $15, $16, $17, $18)
+                   ON CONFLICT (texto_sha256) DO NOTHING
+                   RETURNING id""",
+                fuente_id, archivo_sha256, texto_sha256, m.expediente, m.organo,
+                m.juez, m.materia, m.fecha_emision, m.fecha_publicacion,
+                m.sentido_fallo, m.delitos, m.descripcion, m.extra, texto_publico,
+                num_paginas, uso_ocr, extractor_version, metadatos_version)
+            if sentencia_id is None:
+                estado = "duplicada"
+                sentencia_id = await c.fetchval(
+                    "SELECT id FROM sentencia WHERE texto_sha256 = $1", texto_sha256)
+            else:
+                estado = "indexada"
+                await c.execute(
+                    "INSERT INTO privado.texto_original (sentencia_id, texto) VALUES ($1, $2)",
+                    sentencia_id, texto_original)
+            await c.execute(
+                """UPDATE documento
+                      SET estado = $2, sentencia_id = $3, ultimo_error = NULL,
+                          bloqueado_hasta = NULL
+                    WHERE id = $1""",
+                documento_id, estado, sentencia_id)
+            return estado, sentencia_id
 
     async def resumen(self, fuente_id: str) -> list[asyncpg.Record]:
         return await self.pool.fetch(
